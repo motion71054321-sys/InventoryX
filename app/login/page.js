@@ -1,15 +1,18 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { motion } from "framer-motion";
 import { Cloud, Lock, Mail, ArrowRight, Loader2 } from "lucide-react";
 
-import { auth, db } from "@/lib/firebase";
+import { auth, db } from "@/lib/firebase"; // keep this if you already have it
 import { signInWithEmailAndPassword } from "firebase/auth";
 import { doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
 
 export default function LoginPage() {
+  const router = useRouter();
+
   const [form, setForm] = useState({ email: "", password: "" });
   const [loading, setLoading] = useState(false);
 
@@ -23,17 +26,24 @@ export default function LoginPage() {
 
     setLoading(true);
     try {
-      const cred = await signInWithEmailAndPassword(auth, form.email, form.password);
+      // 1) Firebase login
+      const cred = await signInWithEmailAndPassword(
+        auth,
+        form.email.trim(),
+        form.password
+      );
 
-      // Ensure user doc exists + read role
+      // 2) Ensure Firestore user doc exists + get role
       const uref = doc(db, "users", cred.user.uid);
       const snap = await getDoc(uref);
 
       let role = "user";
+
       if (!snap.exists()) {
         await setDoc(
           uref,
           {
+            uid: cred.user.uid,
             email: cred.user.email || null,
             displayName: cred.user.displayName || null,
             role: "user",
@@ -48,8 +58,26 @@ export default function LoginPage() {
         role = r === "admin" ? "admin" : "user";
       }
 
+      // 3) Create SERVER session cookie via API (important for SSR / protected routes)
+      const idToken = await cred.user.getIdToken();
+
+      const res = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ idToken }),
+      });
+
+      const j = await res.json();
+      if (!res.ok) {
+        throw new Error(j?.error || "Failed to create session");
+      }
+
+      // 4) Store role cookie (your UI uses this)
       setRoleCookie(role);
-      window.location.href = "/products";
+
+      // 5) Redirect
+      router.push("/products");
+      router.refresh();
     } catch (err) {
       alert(err?.message || "Login failed.");
     } finally {
@@ -103,13 +131,17 @@ export default function LoginPage() {
 
             <form onSubmit={onSubmit} className="mt-6 space-y-4">
               <div>
-                <label className="text-xs font-semibold text-slate-600">Email</label>
+                <label className="text-xs font-semibold text-slate-600">
+                  Email
+                </label>
                 <div className="relative mt-1">
                   <Mail className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                   <input
                     type="email"
                     value={form.email}
-                    onChange={(e) => setForm({ ...form, email: e.target.value })}
+                    onChange={(e) =>
+                      setForm((p) => ({ ...p, email: e.target.value }))
+                    }
                     className="w-full rounded-2xl bg-sky-50/70 py-2.5 pl-9 pr-3 text-sm outline-none ring-1 ring-sky-100 focus:ring-sky-200"
                     placeholder="you@example.com"
                     required
@@ -118,13 +150,17 @@ export default function LoginPage() {
               </div>
 
               <div>
-                <label className="text-xs font-semibold text-slate-600">Password</label>
+                <label className="text-xs font-semibold text-slate-600">
+                  Password
+                </label>
                 <div className="relative mt-1">
                   <Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                   <input
                     type="password"
                     value={form.password}
-                    onChange={(e) => setForm({ ...form, password: e.target.value })}
+                    onChange={(e) =>
+                      setForm((p) => ({ ...p, password: e.target.value }))
+                    }
                     className="w-full rounded-2xl bg-sky-50/70 py-2.5 pl-9 pr-3 text-sm outline-none ring-1 ring-sky-100 focus:ring-sky-200"
                     placeholder="••••••••"
                     required
@@ -150,7 +186,10 @@ export default function LoginPage() {
 
               <p className="text-xs text-slate-500">
                 Don’t have an account?{" "}
-                <Link href="/signup" className="font-semibold text-sky-700 hover:underline">
+                <Link
+                  href="/signup"
+                  className="font-semibold text-sky-700 hover:underline"
+                >
                   Sign up
                 </Link>
               </p>

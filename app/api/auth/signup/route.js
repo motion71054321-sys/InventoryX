@@ -13,16 +13,6 @@ const cookieOptions = {
   maxAge: EXPIRES_IN / 1000,
 };
 
-/**
- * POST /api/auth/signup
- * Body: { idToken: string, name?: string }
- *
- * Client first creates user with Firebase Auth, then sends idToken here.
- * This route:
- *  - verifies idToken
- *  - sets session cookie
- *  - (optional) stores/updates user profile in Firestore "users/{uid}"
- */
 export async function POST(req) {
   try {
     const body = await req.json();
@@ -33,16 +23,12 @@ export async function POST(req) {
       return NextResponse.json({ error: "idToken required" }, { status: 400 });
     }
 
-    // Verify token -> get uid/email
     const decoded = await admin.auth().verifyIdToken(idToken);
 
-    // Optionally set display name in Firebase Auth user record
-    // (This is safe: it updates the user's profile server-side)
     if (name) {
       await admin.auth().updateUser(decoded.uid, { displayName: name });
     }
 
-    // Optionally store user profile in Firestore for your app
     await adminDb.collection("users").doc(decoded.uid).set(
       {
         uid: decoded.uid,
@@ -54,7 +40,6 @@ export async function POST(req) {
       { merge: true }
     );
 
-    // Create session cookie
     const sessionCookie = await admin.auth().createSessionCookie(idToken, {
       expiresIn: EXPIRES_IN,
     });
