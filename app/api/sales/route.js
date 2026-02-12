@@ -1,130 +1,140 @@
 import { NextResponse } from "next/server";
 import { getAdminDb, admin } from "@/lib/firebaseAdmin";
 
-function startOfDayDate(d) {
-  const x = new Date(d);
-  x.setHours(0, 0, 0, 0);
-  return x;
+/**
+ * /api/sales
+ * GET:
+ *  - ?days=7
+ *  - OR ?from=YYYY-MM-DD&to=YYYY-MM-DD (inclusive)
+ *
+ * Reads from: transactions
+ * Each txn: { slug, type: "sale"|"restock", qty: number, createdAt: Timestamp }
+ */
+function startOfDayUTC(date) {
+  const d = new Date(date);
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 0, 0, 0, 0));
 }
 
-export async function POST(req) {
-  try {
-    const body = await req.json();
-    const { items, customer = null, note = "" } = body || {};
+function addDaysUTC(date, days) {
+  const d = new Date(date);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d;
+}
 
-    if (!Array.isArray(items) || items.length === 0) {
-      return NextResponse.json({ error: "items is required" }, { status: 400 });
-    }
-
-    const normalized = items.map((it) => ({
-      slug: String(it.slug || "").trim(),
-      qty: Number(it.qty || 0),
-      price: Number(it.price || 0),
-    }));
-
-    if (normalized.some((it) => !it.slug || it.qty <= 0)) {
-      return NextResponse.json({ error: "each item needs valid slug and qty" }, { status: 400 });
-    }
-
-    const total = normalized.reduce((s, it) => s + it.qty * it.price, 0);
-
-    const db = getAdminDb();
-    const now = new Date();
-    const day = startOfDayDate(now);
-
-    // Create order
-    const orderRef = await db.collection("salesOrders").add({
-      items: normalized,
-      total,
-      customer,
-      note,
-      createdAt: admin.firestore.Timestamp.fromDate(now),
-      day: admin.firestore.Timestamp.fromDate(day),
-    });
-
-    // Decrement inventory (transaction for safety)
-    await db.runTransaction(async (tx) => {
-      for (const it of normalized) {
-        const q = await tx.get(
-          db.collection("inventory").where("slug", "==", it.slug).limit(1)
-        );
-        if (q.empty) continue;
-
-        const doc = q.docs[0];
-        const currentQty = Number(doc.data().quantity || 0);
-        tx.update(doc.ref, { quantity: currentQty - Math.abs(it.qty) });
-      }
-    });
-
-    return NextResponse.json({ success: true, id: orderRef.id });
-  } catch (err) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
-  }
+function parseYMDToUTC(ymd) {
+  // ymd: "YYYY-MM-DD"
+  const [y, m, d] = (ymd || "").split("-").map(Number);
+  if (!y || !m || !d) return null;
+  return new Date(Date.UTC(y, m - 1, d, 0, 0, 0, 0));
 }
 
 export async function GET(req) {
   try {
-    const { searchParams } = new URL(req.url);
-    const days = Math.min(Number(searchParams.get("days") || 30), 365);
-
     const db = getAdminDb();
+    const { searchParams } = new URL(req.url);
 
-    const since = new Date();
-    since.setDate(since.getDate() - days);
-    since.setHours(0, 0, 0, 0);
+    const daysRaw = searchParams.get("days");
+    const fromRaw = searchParams.get("from");
+    const toRaw = searchParams.get("to");
 
-    // Query recent orders
+    let fromDateUTC;
+    let toDateUTC;
+
+    if (fromRaw && toRaw) {
+      const f = parseYMDToUTC(fromRaw);
+      const t = parseYMDToUTC(toRaw);
+      if (!f || !t) {
+        return NextResponse.json(
+          { error: "Invalid from/to. Use YYYY-MM-DD." },
+          { status: 400 }
+        );
+      }
+      fromDateUTC = startOfDayUTC(f);
+      // make 'to' inclusive by going to next day start
+      toDateUTC = addDaysUTC(startOfDayUTC(t), 1);
+    } else {
+      const days = Math.max(1, Math.min(365, Number(daysRaw || 7)));
+      // default: last N days including today (UTC)
+      const todayUTC = startOfDayUTC(new Date());
+      fromDateUTC = addDaysUTC(todayUTC, -(days - 1));
+      toDateUTC = addDaysUTC(todayUTC, 1);
+    }
+
+    const fromTs = admin.firestore.Timestamp.fromDate(fromDateUTC);
+    const toTs = admin.firestore.Timestamp.fromDate(toDateUTC);
+
+    // Query transactions within range
     const snap = await db
-      .collection("salesOrders")
-      .where("day", ">=", admin.firestore.Timestamp.fromDate(since))
+      .collection("transactions")
+      .where("createdAt", ">=", fromTs)
+      .where("createdAt", "<", toTs)
       .get();
 
-    const orders = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    let totalSalesQty = 0;
+    let totalRestockQty = 0;
+    let salesCount = 0;
+    let restockCount = 0;
 
-    // Aggregate in memory (Firestore doesn't do easy group-by without extra infra)
-    const dailyMap = new Map(); // dayStr -> {revenue, orders}
-    const productMap = new Map(); // slug -> {qty, revenue}
+    // Optional: breakdown per day
+    const daily = {}; // { "YYYY-MM-DD": { salesQty, restockQty, salesCount, restockCount } }
 
-    let revenue = 0;
-    let count = 0;
+    for (const doc of snap.docs) {
+      const data = doc.data() || {};
+      const type = data.type;
+      const qty = Number(data.qty || 0);
 
-    for (const o of orders) {
-      count += 1;
-      revenue += Number(o.total || 0);
+      // Normalize createdAt to YYYY-MM-DD (UTC)
+      const createdAt = data.createdAt?.toDate ? data.createdAt.toDate() : null;
+      const key = createdAt
+        ? new Date(Date.UTC(createdAt.getUTCFullYear(), createdAt.getUTCMonth(), createdAt.getUTCDate()))
+            .toISOString()
+            .slice(0, 10)
+        : "unknown";
 
-      const dayDate = o.day?.toDate ? o.day.toDate() : new Date(o.day);
-      const dayStr = dayDate.toISOString().slice(0, 10);
+      if (!daily[key]) {
+        daily[key] = { salesQty: 0, restockQty: 0, salesCount: 0, restockCount: 0 };
+      }
 
-      const d0 = dailyMap.get(dayStr) || { day: dayStr, revenue: 0, orders: 0 };
-      d0.revenue += Number(o.total || 0);
-      d0.orders += 1;
-      dailyMap.set(dayStr, d0);
-
-      for (const it of o.items || []) {
-        const slug = String(it.slug || "");
-        const qty = Number(it.qty || 0);
-        const price = Number(it.price || 0);
-
-        const p0 = productMap.get(slug) || { slug, qty: 0, revenue: 0 };
-        p0.qty += qty;
-        p0.revenue += qty * price;
-        productMap.set(slug, p0);
+      if (type === "sale") {
+        totalSalesQty += qty;
+        salesCount += 1;
+        daily[key].salesQty += qty;
+        daily[key].salesCount += 1;
+      } else if (type === "restock") {
+        totalRestockQty += qty;
+        restockCount += 1;
+        daily[key].restockQty += qty;
+        daily[key].restockCount += 1;
       }
     }
 
-    const daily = [...dailyMap.values()].sort((a, b) => a.day.localeCompare(b.day));
-    const topProducts = [...productMap.values()]
-      .sort((a, b) => b.qty - a.qty)
-      .slice(0, 10);
+    // sort daily keys
+    const dailySorted = Object.keys(daily)
+      .sort()
+      .map((date) => ({ date, ...daily[date] }));
 
-    const kpis = {
-      revenue,
-      orders: count,
-      aov: count ? +(revenue / count).toFixed(2) : 0,
-    };
-
-    return NextResponse.json({ success: true, days, daily, topProducts, kpis });
-  } catch (err) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    return NextResponse.json(
+      {
+        success: true,
+        range: {
+          from: fromDateUTC.toISOString(),
+          toExclusive: toDateUTC.toISOString(),
+        },
+        totals: {
+          salesQty: totalSalesQty,
+          restockQty: totalRestockQty,
+          salesCount,
+          restockCount,
+          netQty: totalRestockQty - totalSalesQty,
+        },
+        daily: dailySorted,
+      },
+      { status: 200 }
+    );
+  } catch (e) {
+    return NextResponse.json(
+      { error: e?.message || "Failed to load sales." },
+      { status: 500 }
+    );
   }
 }
