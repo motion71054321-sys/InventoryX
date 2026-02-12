@@ -4,27 +4,33 @@ import { adminDb } from "@/lib/firebaseAdmin";
 
 const now = () => admin.firestore.FieldValue.serverTimestamp();
 
+function toMillis(ts) {
+  // Firestore Timestamp -> ms
+  if (!ts) return 0;
+  if (typeof ts.toMillis === "function") return ts.toMillis();
+  if (typeof ts.seconds === "number") return ts.seconds * 1000;
+  return 0;
+}
+
 /**
  * Collection: products (docId = slug)
- * Fields: slug, quantity, price, leadTimeDays, safetyStock, createdAt, updatedAt
+ * Suggested fields: slug, quantity, price, leadTimeDays, safetyStock, ownerId, createdAt, updatedAt
  *
  * Collection: transactions (auto docId)
- * Fields: slug, type ("sale"|"restock"), qty, priceSnapshot, createdAt
+ * Fields: slug, type ("sale"|"restock"), qty, priceSnapshot, ownerId, createdAt
  */
 
-// CREATE / UPSERT (does not overwrite createdAt)
+// CREATE / UPSERT
 export async function POST(req) {
   try {
     const body = await req.json();
     const slug = (body.slug || "").trim();
     const quantity = Number(body.quantity);
     const price = Number(body.price);
+    const ownerId = (body.ownerId || "").trim(); // optional but recommended if you use auth
 
     if (!slug || !Number.isFinite(quantity) || !Number.isFinite(price)) {
-      return NextResponse.json(
-        { error: "Missing/invalid fields" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Missing/invalid fields" }, { status: 400 });
     }
 
     const ref = adminDb.collection("products").doc(slug);
@@ -37,6 +43,7 @@ export async function POST(req) {
           slug,
           quantity,
           price,
+          ownerId: ownerId || null,
           leadTimeDays: Number(body.leadTimeDays || 7),
           safetyStock: Number(body.safetyStock || 5),
           createdAt: now(),
@@ -50,6 +57,7 @@ export async function POST(req) {
             slug,
             quantity,
             price,
+            ownerId: ownerId || cur.ownerId || null,
             leadTimeDays: Number(body.leadTimeDays || cur.leadTimeDays || 7),
             safetyStock: Number(body.safetyStock || cur.safetyStock || 5),
             updatedAt: now(),
@@ -65,33 +73,34 @@ export async function POST(req) {
   }
 }
 
-// READ (safe orderBy with fallback)
-export async function GET() {
+// ✅ UPDATED READ: supports ownerId and avoids composite index by sorting in JS
+// GET /api/product?ownerId=USER_ID
+export async function GET(req) {
   try {
-    const snap = await adminDb
-      .collection("products")
-      .orderBy("updatedAt", "desc")
-      .get();
+    const { searchParams } = new URL(req.url);
+    const ownerId = (searchParams.get("ownerId") || "").trim();
+
+    let query = adminDb.collection("products");
+    if (ownerId) query = query.where("ownerId", "==", ownerId);
+
+    const snap = await query.get();
     const products = snap.docs.map((d) => d.data());
-    return NextResponse.json({ success: true, Product: products });
+
+    // Sort by updatedAt desc (fallback to createdAt)
+    products.sort((a, b) => {
+      const am = toMillis(a.updatedAt) || toMillis(a.createdAt);
+      const bm = toMillis(b.updatedAt) || toMillis(b.createdAt);
+      return bm - am;
+    });
+
+    return NextResponse.json({ success: true, Product: products, sortedInJs: true });
   } catch (e) {
-    try {
-      const snap = await adminDb.collection("products").get();
-      const products = snap.docs.map((d) => d.data());
-      return NextResponse.json({ success: true, Product: products, fallback: true });
-    } catch (e2) {
-      return NextResponse.json({ error: e2.message }, { status: 500 });
-    }
+    return NextResponse.json({ error: e.message }, { status: 500 });
   }
 }
 
 /**
  * UPDATE (supports quantity OR delta; logs sale/restock automatically)
- * Body examples:
- *   { slug: "abc", quantity: 25 }
- *   { slug: "abc", delta: -3 }  // sale of 3
- *   { slug: "abc", delta: 10 }  // restock of 10
- *   { slug: "abc", price: 99 }
  */
 export async function PATCH(req) {
   try {
@@ -145,16 +154,14 @@ export async function PATCH(req) {
 
       diff = finalQty - prevQty;
 
-      // ✅ UPDATED: log price snapshot for analytics
+      // ✅ UPDATED: add priceSnapshot so analytics works even if price changes later
       if (diff !== 0) {
         tx.set(adminDb.collection("transactions").doc(), {
           slug,
           type: diff < 0 ? "sale" : "restock",
           qty: Math.abs(diff),
-
-          // snapshot price for analytics (use nextPrice if provided, else current product price)
           priceSnapshot: Number(nextPrice ?? cur.price ?? 0),
-
+          ownerId: cur.ownerId ?? null,
           createdAt: now(),
         });
       }
