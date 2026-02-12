@@ -248,7 +248,7 @@ export default function Home() {
   const suggestions = useMemo(() => reorder?.suggestions || [], [reorder]);
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-indigo-50 via-white to-white">
+    <div className="min-h-screen bg-linear-to-b from-indigo-50 via-white to-white">
       <Header />
 
       {/* Toast */}
@@ -456,7 +456,7 @@ export default function Home() {
               </div>
             </div>
 
-            <div className="mt-4 max-h-[340px] overflow-auto rounded-xl border">
+            <div className="mt-4 max-h-85 overflow-auto rounded-xl border">
               <table className="w-full text-sm">
                 <thead className="sticky top-0 bg-white">
                   <tr className="text-left text-gray-600">
@@ -527,7 +527,7 @@ export default function Home() {
                 <motion.div
                   key={r.slug}
                   whileHover={{ scale: 1.02 }}
-                  className="rounded-2xl border bg-gradient-to-b from-white to-indigo-50 p-4 shadow-sm"
+                  className="rounded-2xl border bg-linear-to-b from-white to-indigo-50 p-4 shadow-sm"
                 >
                   <p className="font-semibold">{r.slug}</p>
                   <p className="text-sm text-gray-600">score: {r.score}</p>
