@@ -1,6 +1,6 @@
 "use client";
 
-import Header from "@/component/Header";
+import Header from "@/components/Header";
 import { useEffect, useMemo, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -25,13 +25,25 @@ import {
   Bar,
 } from "recharts";
 
-// ✅ If you're using Firebase Auth, pass the user uid into this component or replace mockOwnerId with auth uid.
-// Example: const ownerId = user?.uid;
-const mockOwnerId = ""; // <-- set to "" if you DON'T use ownerId filtering
+// ✅ If you use Firebase Auth, set ownerId = user?.uid. Otherwise keep "".
+const mockOwnerId = "";
 
 function toNum(v, fallback = 0) {
   const n = Number(v);
   return Number.isFinite(n) ? n : fallback;
+}
+
+function formatINR(n) {
+  const v = toNum(n, 0);
+  try {
+    return new Intl.NumberFormat("en-IN", {
+      style: "currency",
+      currency: "INR",
+      maximumFractionDigits: 0,
+    }).format(v);
+  } catch {
+    return `₹ ${v}`;
+  }
 }
 
 function Badge({ text }) {
@@ -78,19 +90,18 @@ export default function Home() {
   const [products, setProducts] = useState([]);
   const [query, setQuery] = useState("");
 
-  // Dashboard bits (optional on home page, but you asked “frontend updated too”)
   const [days, setDays] = useState(30);
   const [analytics, setAnalytics] = useState(null);
   const [reorder, setReorder] = useState(null);
   const [recoSlug, setRecoSlug] = useState("");
   const [reco, setReco] = useState(null);
 
-  // ✅ ownerId: set this from auth if you use per-user data
   const ownerId = mockOwnerId;
 
   const toastIt = (msg, type = "ok") => {
     setToast({ msg, type });
-    setTimeout(() => setToast(null), 2200);
+    window.clearTimeout(toastIt._t);
+    toastIt._t = window.setTimeout(() => setToast(null), 2200);
   };
 
   const ownerParam = ownerId ? `ownerId=${encodeURIComponent(ownerId)}` : "";
@@ -101,7 +112,7 @@ export default function Home() {
       const url = ownerParam ? `/api/product?${ownerParam}` : "/api/product";
       const r = await fetch(url, { cache: "no-store" });
       const j = await r.json();
-      setProducts(Array.isArray(j.Product) ? j.Product : []);
+      setProducts(Array.isArray(j?.Product) ? j.Product : []);
     } catch (e) {
       console.error(e);
       setProducts([]);
@@ -112,11 +123,16 @@ export default function Home() {
   // ------------------ FETCH DASHBOARD DATA ------------------
   const fetchDashboard = async () => {
     try {
-      const a = await fetch(`/api/analytics?days=${days}`, { cache: "no-store" }).then((r) => r.json());
-      setAnalytics(a);
+      const a = await fetch(`/api/analytics?days=${days}`, {
+        cache: "no-store",
+      }).then((r) => r.json());
+      setAnalytics(a || null);
 
-      const ro = await fetch(`/api/reorder?lookbackDays=${days}&targetDays=21`, { cache: "no-store" }).then((r) => r.json());
-      setReorder(ro);
+      const ro = await fetch(
+        `/api/reorder?lookbackDays=${days}&targetDays=21`,
+        { cache: "no-store" }
+      ).then((r) => r.json());
+      setReorder(ro || null);
     } catch (e) {
       console.error(e);
     }
@@ -128,9 +144,10 @@ export default function Home() {
         ? `/api/recommendations?slug=${encodeURIComponent(slug)}&days=90&limit=6`
         : `/api/recommendations?days=90&limit=6`;
       const r = await fetch(url, { cache: "no-store" }).then((x) => x.json());
-      setReco(r);
+      setReco(r || null);
     } catch (e) {
       console.error(e);
+      setReco(null);
     }
   };
 
@@ -148,13 +165,16 @@ export default function Home() {
 
   useEffect(() => {
     fetchRecommendations(recoSlug);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [recoSlug]);
 
   // ------------------ FILTERED PRODUCTS ------------------
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return products;
-    return products.filter((p) => String(p.slug || "").toLowerCase().includes(q));
+    return products.filter((p) =>
+      String(p?.slug || "").toLowerCase().includes(q)
+    );
   }, [products, query]);
 
   // ------------------ FORM HANDLERS ------------------
@@ -165,8 +185,9 @@ export default function Home() {
 
   const addOrUpdateProduct = async (e) => {
     e.preventDefault();
+
     const payload = {
-      slug: productForm.slug.trim(),
+      slug: String(productForm.slug || "").trim(),
       quantity: toNum(productForm.quantity),
       price: toNum(productForm.price),
       leadTimeDays: toNum(productForm.leadTimeDays, 7),
@@ -183,14 +204,17 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      const j = await r.json();
-      if (!r.ok) throw new Error(j.error || "Failed");
+
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j?.error || "Failed to save");
 
       toastIt("Saved ✅");
       setProductForm((p) => ({ ...p, slug: "", quantity: "", price: "" }));
       await fetchProducts();
+      await fetchDashboard();
+      await fetchRecommendations(recoSlug);
     } catch (e2) {
-      toastIt(e2.message || "Save failed", "err");
+      toastIt(e2?.message || "Save failed", "err");
     } finally {
       setSaving(false);
     }
@@ -203,8 +227,8 @@ export default function Home() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-    const j = await r.json();
-    if (!r.ok) throw new Error(j.error || "Update failed");
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j?.error || "Update failed");
     return j;
   };
 
@@ -214,8 +238,9 @@ export default function Home() {
       toastIt("Sold 1 ✅");
       await fetchProducts();
       await fetchDashboard();
+      await fetchRecommendations(recoSlug);
     } catch (e) {
-      toastIt(e.message, "err");
+      toastIt(e?.message || "Failed", "err");
     }
   };
 
@@ -225,20 +250,25 @@ export default function Home() {
       toastIt(`Restocked +${qty} ✅`);
       await fetchProducts();
       await fetchDashboard();
+      await fetchRecommendations(recoSlug);
     } catch (e) {
-      toastIt(e.message, "err");
+      toastIt(e?.message || "Failed", "err");
     }
   };
 
   const onDelete = async (slug) => {
     try {
-      const r = await fetch(`/api/product?slug=${encodeURIComponent(slug)}`, { method: "DELETE" });
-      const j = await r.json();
-      if (!r.ok) throw new Error(j.error || "Delete failed");
+      const r = await fetch(`/api/product?slug=${encodeURIComponent(slug)}`, {
+        method: "DELETE",
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j?.error || "Delete failed");
       toastIt("Deleted ✅");
       await fetchProducts();
+      await fetchDashboard();
+      await fetchRecommendations(recoSlug);
     } catch (e) {
-      toastIt(e.message, "err");
+      toastIt(e?.message || "Failed", "err");
     }
   };
 
@@ -247,8 +277,10 @@ export default function Home() {
   const topProducts = useMemo(() => analytics?.topProducts || [], [analytics]);
   const suggestions = useMemo(() => reorder?.suggestions || [], [reorder]);
 
+  const kpis = analytics?.kpis || { revenue: 0, salesCount: 0, aov: 0 };
+
   return (
-    <div className="min-h-screen bg-linear-to-b from-indigo-50 via-white to-white">
+    <div className="min-h-screen bg-gradient-to-b from-indigo-50 via-white to-white">
       <Header />
 
       {/* Toast */}
@@ -378,21 +410,9 @@ export default function Home() {
 
         {/* KPI cards */}
         <div className="mt-6 grid gap-4 md:grid-cols-3">
-          <StatCard
-            title="Revenue"
-            value={`₹ ${analytics?.kpis?.revenue ?? 0}`}
-            icon={IndianRupee}
-          />
-          <StatCard
-            title="Sales Txns"
-            value={`${analytics?.kpis?.salesCount ?? 0}`}
-            icon={ShoppingCart}
-          />
-          <StatCard
-            title="Avg Sale Value"
-            value={`₹ ${analytics?.kpis?.aov ?? 0}`}
-            icon={TrendingUp}
-          />
+          <StatCard title="Revenue" value={formatINR(kpis.revenue)} icon={IndianRupee} />
+          <StatCard title="Sales Txns" value={`${toNum(kpis.salesCount, 0)}`} icon={ShoppingCart} />
+          <StatCard title="Avg Sale Value" value={formatINR(kpis.aov)} icon={TrendingUp} />
         </div>
 
         {/* Charts */}
@@ -452,11 +472,11 @@ export default function Home() {
               </div>
               <div className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm">
                 <AlertTriangle className="h-4 w-4 text-gray-600" />
-                {suggestions.filter((s) => s.urgency === "high" || s.urgency === "critical").length} urgent
+                {suggestions.filter((s) => ["high", "critical"].includes(s.urgency)).length} urgent
               </div>
             </div>
 
-            <div className="mt-4 max-h-85 overflow-auto rounded-xl border">
+            <div className="mt-4 max-h-[340px] overflow-auto rounded-xl border">
               <table className="w-full text-sm">
                 <thead className="sticky top-0 bg-white">
                   <tr className="text-left text-gray-600">
@@ -471,12 +491,12 @@ export default function Home() {
                   {suggestions.slice(0, 25).map((s) => (
                     <tr key={s.slug} className="border-t">
                       <td className="p-3 font-medium">{s.slug}</td>
-                      <td className="p-3">{s.currentQty}</td>
-                      <td className="p-3">{s.reorderPoint}</td>
-                      <td className="p-3">{s.recommendedQty}</td>
+                      <td className="p-3">{toNum(s.currentQty)}</td>
+                      <td className="p-3">{toNum(s.reorderPoint)}</td>
+                      <td className="p-3">{toNum(s.recommendedQty)}</td>
                       <td className="p-3">
                         <button
-                          onClick={() => onRestock(s.slug, Math.max(1, s.recommendedQty))}
+                          onClick={() => onRestock(s.slug, Math.max(1, toNum(s.recommendedQty)))}
                           className="rounded-xl border bg-white px-3 py-2 text-xs hover:bg-gray-50"
                         >
                           Restock
@@ -527,10 +547,10 @@ export default function Home() {
                 <motion.div
                   key={r.slug}
                   whileHover={{ scale: 1.02 }}
-                  className="rounded-2xl border bg-linear-to-b from-white to-indigo-50 p-4 shadow-sm"
+                  className="rounded-2xl border bg-gradient-to-b from-white to-indigo-50 p-4 shadow-sm"
                 >
                   <p className="font-semibold">{r.slug}</p>
-                  <p className="text-sm text-gray-600">score: {r.score}</p>
+                  <p className="text-sm text-gray-600">score: {toNum(r.score, 0)}</p>
                   <div className="mt-3 grid grid-cols-2 gap-2">
                     <button
                       onClick={() => setRecoSlug(r.slug)}
@@ -579,7 +599,7 @@ export default function Home() {
               </thead>
               <tbody>
                 {filtered.map((p) => {
-                  const qty = toNum(p.quantity);
+                  const qty = toNum(p?.quantity, 0);
                   return (
                     <tr key={p.slug} className="border-t">
                       <td className="p-3 font-medium">{p.slug}</td>
@@ -601,9 +621,9 @@ export default function Home() {
                           )}
                         </div>
                       </td>
-                      <td className="p-3">₹ {toNum(p.price)}</td>
-                      <td className="p-3">{toNum(p.leadTimeDays, 7)}d</td>
-                      <td className="p-3">{toNum(p.safetyStock, 5)}</td>
+                      <td className="p-3">{formatINR(p?.price)}</td>
+                      <td className="p-3">{toNum(p?.leadTimeDays, 7)}d</td>
+                      <td className="p-3">{toNum(p?.safetyStock, 5)}</td>
                       <td className="p-3">
                         <div className="flex flex-wrap gap-2">
                           <button
