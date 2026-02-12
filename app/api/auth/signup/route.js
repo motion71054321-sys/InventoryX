@@ -1,39 +1,70 @@
 import { NextResponse } from "next/server";
-import bcrypt from "bcryptjs";
-import dbConnect from "@/lib/mongodb";
-import User from "@/models/User";
-import { signToken, SESSION_COOKIE, cookieOptions } from "@/lib/auth";
+import admin from "@/lib/firebaseAdmin";
+import { adminDb } from "@/lib/firebaseAdmin";
 
+const SESSION_COOKIE = "session";
+const EXPIRES_IN = 1000 * 60 * 60 * 24 * 7; // 7 days
+
+const cookieOptions = {
+  httpOnly: true,
+  secure: process.env.NODE_ENV === "production",
+  sameSite: "lax",
+  path: "/",
+  maxAge: EXPIRES_IN / 1000,
+};
+
+/**
+ * POST /api/auth/signup
+ * Body: { idToken: string, name?: string }
+ *
+ * Client first creates user with Firebase Auth, then sends idToken here.
+ * This route:
+ *  - verifies idToken
+ *  - sets session cookie
+ *  - (optional) stores/updates user profile in Firestore "users/{uid}"
+ */
 export async function POST(req) {
   try {
-    const { name, email, password } = await req.json();
+    const body = await req.json();
+    const idToken = body?.idToken;
+    const name = (body?.name || "").trim();
 
-    if (!name || !email || !password) {
-      return NextResponse.json({ error: "Missing fields" }, { status: 400 });
-    }
-    if (password.length < 6) {
-      return NextResponse.json({ error: "Password must be at least 6 characters" }, { status: 400 });
-    }
-
-    await dbConnect();
-
-    const existing = await User.findOne({ email: email.toLowerCase() });
-    if (existing) {
-      return NextResponse.json({ error: "Email already in use" }, { status: 409 });
+    if (!idToken || typeof idToken !== "string") {
+      return NextResponse.json({ error: "idToken required" }, { status: 400 });
     }
 
-    const passwordHash = await bcrypt.hash(password, 10);
+    // Verify token -> get uid/email
+    const decoded = await admin.auth().verifyIdToken(idToken);
 
-    const user = await User.create({
-      name,
-      email: email.toLowerCase(),
-      passwordHash,
+    // Optionally set display name in Firebase Auth user record
+    // (This is safe: it updates the user's profile server-side)
+    if (name) {
+      await admin.auth().updateUser(decoded.uid, { displayName: name });
+    }
+
+    // Optionally store user profile in Firestore for your app
+    await adminDb.collection("users").doc(decoded.uid).set(
+      {
+        uid: decoded.uid,
+        email: decoded.email || null,
+        name: name || decoded.name || null,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+
+    // Create session cookie
+    const sessionCookie = await admin.auth().createSessionCookie(idToken, {
+      expiresIn: EXPIRES_IN,
     });
 
-    const token = await signToken({ sub: user._id.toString(), email: user.email, name: user.name });
+    const res = NextResponse.json(
+      { success: true, uid: decoded.uid, email: decoded.email || null, name: name || decoded.name || null },
+      { status: 201 }
+    );
 
-    const res = NextResponse.json({ success: true }, { status: 201 });
-    res.cookies.set(SESSION_COOKIE, token, cookieOptions());
+    res.cookies.set(SESSION_COOKIE, sessionCookie, cookieOptions);
     return res;
   } catch (err) {
     return NextResponse.json({ error: err.message || "Signup failed" }, { status: 500 });

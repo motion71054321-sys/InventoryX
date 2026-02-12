@@ -75,7 +75,7 @@ export default function Home() {
             <div className="leading-tight">
               <p className="text-sm font-semibold text-slate-900">InventoryX</p>
               <p className="text-xs text-slate-500">
-                Inventory Management • Next.js • MongoDB
+                Inventory Management • Next.js • Firebase
               </p>
             </div>
           </div>
@@ -158,7 +158,7 @@ export default function Home() {
 
               <p className="text-base leading-relaxed text-slate-600 md:text-lg">
                 InventoryX is a clean, modern inventory management system built
-                with Next.js and MongoDB. Add products, view them in a table,
+                with Next.js and Firebase. Add products, view them in a table,
                 and safely edit or delete items. Our recommendation system helps
                 you spot trends and reduce stock-outs.
               </p>
@@ -355,7 +355,7 @@ export default function Home() {
                   </h3>
                   <p className="mt-2 max-w-2xl text-slate-600">
                     InventoryX keeps everything transparent: products live in
-                    MongoDB, actions are fast, and recommendations highlight what
+                    Firebase, actions are fast, and recommendations highlight what
                     matters next.
                   </p>
                 </div>
@@ -382,7 +382,7 @@ export default function Home() {
 
               <div className="mt-8 flex items-center gap-2 text-sm text-slate-600">
                 <Cloud className="h-4 w-4 text-sky-700" />
-                Built on Next.js + MongoDB Atlas
+                Built on Next.js + Firebase
               </div>
             </div>
           </div>
@@ -398,7 +398,7 @@ export default function Home() {
                 </p>
                 <p className="mt-2 text-sm text-slate-600">
                   Add, edit, and delete products with predictable, safe API
-                  updates to MongoDB.
+                  updates to Firebase.
                 </p>
               </div>
               <div className="rounded-3xl bg-white p-6 shadow-sm ring-1 ring-sky-100">
@@ -428,7 +428,7 @@ export default function Home() {
           <div className="mx-auto flex max-w-6xl flex-col gap-3 px-4 py-8 md:flex-row md:items-center md:justify-between">
             <div className="text-sm text-slate-600">
               © {new Date().getFullYear()} InventoryX • Built with Next.js &
-              MongoDB
+              Firebase
             </div>
             <div className="flex items-center gap-4 text-sm">
               <a

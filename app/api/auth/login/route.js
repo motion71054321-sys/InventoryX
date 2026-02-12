@@ -1,35 +1,68 @@
 import { NextResponse } from "next/server";
-import bcrypt from "bcryptjs";
-import dbConnect from "@/lib/mongodb";
-import User from "@/models/User";
-import { signToken, SESSION_COOKIE, cookieOptions } from "@/lib/auth";
+import admin from "@/lib/firebaseAdmin";
 
+const SESSION_COOKIE = "session";
+const EXPIRES_IN = 1000 * 60 * 60 * 24 * 7; // 7 days in ms
+
+const cookieOptions = {
+  httpOnly: true,
+  secure: process.env.NODE_ENV === "production",
+  sameSite: "lax",
+  path: "/",
+  maxAge: EXPIRES_IN / 1000, // seconds
+};
+
+/**
+ * POST /api/auth/login
+ * Body: { idToken: string }
+ *
+ * Client does:
+ *  - signInWithEmailAndPassword(auth, email, password)
+ *  - const idToken = await user.getIdToken()
+ *  - POST { idToken } to this route
+ */
 export async function POST(req) {
   try {
-    const { email, password } = await req.json();
+    const { idToken } = await req.json();
 
-    if (!email || !password) {
-      return NextResponse.json({ error: "Missing fields" }, { status: 400 });
+    if (!idToken || typeof idToken !== "string") {
+      return NextResponse.json({ error: "idToken required" }, { status: 400 });
     }
 
-    await dbConnect();
+    // Verify the ID token (user already authenticated via Firebase Auth)
+    const decoded = await admin.auth().verifyIdToken(idToken);
 
-    const user = await User.findOne({ email: email.toLowerCase() });
-    if (!user) {
-      return NextResponse.json({ error: "Invalid email or password" }, { status: 401 });
-    }
+    // Create session cookie
+    const sessionCookie = await admin.auth().createSessionCookie(idToken, {
+      expiresIn: EXPIRES_IN,
+    });
 
-    const ok = await bcrypt.compare(password, user.passwordHash);
-    if (!ok) {
-      return NextResponse.json({ error: "Invalid email or password" }, { status: 401 });
-    }
+    const res = NextResponse.json(
+      {
+        success: true,
+        uid: decoded.uid,
+        email: decoded.email || null,
+        name: decoded.name || null,
+      },
+      { status: 200 }
+    );
 
-    const token = await signToken({ sub: user._id.toString(), email: user.email, name: user.name });
-
-    const res = NextResponse.json({ success: true }, { status: 200 });
-    res.cookies.set(SESSION_COOKIE, token, cookieOptions());
+    res.cookies.set(SESSION_COOKIE, sessionCookie, cookieOptions);
     return res;
   } catch (err) {
-    return NextResponse.json({ error: err.message || "Login failed" }, { status: 500 });
+    return NextResponse.json(
+      { error: err.message || "Login failed" },
+      { status: 401 }
+    );
   }
+}
+
+/**
+ * DELETE /api/auth/login
+ * Clears the session cookie (logout)
+ */
+export async function DELETE() {
+  const res = NextResponse.json({ success: true }, { status: 200 });
+  res.cookies.set(SESSION_COOKIE, "", { ...cookieOptions, maxAge: 0 });
+  return res;
 }
