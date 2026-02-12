@@ -652,13 +652,6 @@ export default function ProductsPage() {
               </Link>
             )}
 
-            <Link
-              href="/"
-              className="hidden sm:inline-flex items-center gap-2 rounded-xl bg-white px-4 py-2 text-sm font-semibold text-slate-900 shadow-sm ring-1 ring-sky-200 hover:ring-sky-300 transition"
-            >
-              Home
-            </Link>
-
             <button
               onClick={logout}
               className="inline-flex items-center gap-2 rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-sky-700 transition"
