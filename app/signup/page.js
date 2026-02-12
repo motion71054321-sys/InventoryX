@@ -4,7 +4,10 @@ import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { createUserWithEmailAndPassword, updateProfile } from "firebase/auth";
-import { auth } from "@/lib/firebaseClient";
+
+// ✅ Use the SAME auth import style as your login page
+import { auth, db } from "@/lib/firebase";
+import { doc, setDoc, serverTimestamp } from "firebase/firestore";
 
 export default function SignupPage() {
   const router = useRouter();
@@ -25,7 +28,8 @@ export default function SignupPage() {
 
     if (!cleanName) return setError("Name is required");
     if (!cleanEmail) return setError("Email is required");
-    if (!password || password.length < 6) return setError("Password must be at least 6 characters");
+    if (!password || password.length < 6)
+      return setError("Password must be at least 6 characters");
 
     try {
       setLoading(true);
@@ -33,13 +37,27 @@ export default function SignupPage() {
       // 1) Create Firebase user
       const cred = await createUserWithEmailAndPassword(auth, cleanEmail, password);
 
-      // 2) Set display name (optional but recommended)
+      // 2) Set display name
       await updateProfile(cred.user, { displayName: cleanName });
 
-      // 3) Get ID token
+      // 3) Create/ensure Firestore user doc (similar to login behavior)
+      await setDoc(
+        doc(db, "users", cred.user.uid),
+        {
+          uid: cred.user.uid,
+          email: cred.user.email || cleanEmail,
+          displayName: cleanName,
+          role: "user",
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+
+      // 4) Get ID token
       const idToken = await cred.user.getIdToken();
 
-      // 4) Create session cookie (server)
+      // 5) Create session cookie (server)
       const res = await fetch("/api/auth/signup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -49,8 +67,16 @@ export default function SignupPage() {
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || "Signup failed");
 
-      // 5) Redirect
-      router.push("/dashboard"); // change to "/" if you want home
+      // ✅ IMPORTANT CHANGE:
+      // Instead of going to a different dashboard/page,
+      // send them to the same auth UI (login mode) OR directly to /products.
+      // Choose ONE:
+
+      // Option A: go to merged login UI:
+      router.replace("/auth?mode=login");
+
+      // Option B (if you prefer auto-enter app after signup), use this instead:
+      // router.replace("/products");
     } catch (err) {
       setError(err?.message || "Signup failed");
     } finally {
@@ -82,6 +108,7 @@ export default function SignupPage() {
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 autoComplete="name"
+                required
               />
             </div>
 
@@ -93,6 +120,7 @@ export default function SignupPage() {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 autoComplete="email"
+                required
               />
             </div>
 
@@ -105,6 +133,7 @@ export default function SignupPage() {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 autoComplete="new-password"
+                required
               />
             </div>
 

@@ -2,6 +2,7 @@
 
 import Header from "@/components/Header";
 import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Search,
@@ -25,8 +26,14 @@ import {
   Bar,
 } from "recharts";
 
-// ✅ If you use Firebase Auth, set ownerId = user?.uid. Otherwise keep "".
-const mockOwnerId = "";
+import { auth } from "@/lib/firebase";
+import { onAuthStateChanged } from "firebase/auth";
+
+// ✅ If you DON'T want auth guard, set this to false
+const REQUIRE_AUTH = true;
+
+// ✅ If you use Firebase Auth, ownerId = user?.uid. Otherwise keep "".
+const mockOwnerId = ""; // keep "" normally
 
 function toNum(v, fallback = 0) {
   const n = Number(v);
@@ -48,7 +55,7 @@ function formatINR(n) {
 
 function Badge({ text }) {
   return (
-    <span className="rounded-full border bg-white px-2 py-1 text-xs text-gray-700">
+    <span className="rounded-full border border-slate-200 bg-white px-2 py-1 text-xs text-slate-700">
       {text}
     </span>
   );
@@ -59,21 +66,45 @@ function StatCard({ title, value, icon: Icon, sub }) {
     <motion.div
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
-      className="rounded-2xl border bg-white/70 backdrop-blur p-4 shadow-sm"
+      className="rounded-2xl border border-slate-200 bg-white/70 backdrop-blur p-4 shadow-sm"
     >
       <div className="flex items-center justify-between">
-        <p className="text-sm text-gray-600">{title}</p>
-        <div className="rounded-xl border bg-white p-2">
-          <Icon className="h-5 w-5" />
+        <p className="text-sm text-slate-600">{title}</p>
+        <div className="rounded-xl border border-slate-200 bg-white p-2">
+          <Icon className="h-5 w-5 text-slate-700" />
         </div>
       </div>
-      <p className="mt-2 text-2xl font-semibold">{value}</p>
-      {sub ? <p className="mt-1 text-xs text-gray-600">{sub}</p> : null}
+      <p className="mt-2 text-2xl font-semibold text-slate-900">{value}</p>
+      {sub ? <p className="mt-1 text-xs text-slate-600">{sub}</p> : null}
     </motion.div>
   );
 }
 
-export default function Home() {
+export default function DashboardPage() {
+  const router = useRouter();
+
+  // ------------------ AUTH ------------------
+  const [user, setUser] = useState(null);
+  const [authLoading, setAuthLoading] = useState(REQUIRE_AUTH);
+
+  useEffect(() => {
+    if (!REQUIRE_AUTH) return;
+
+    const unsub = onAuthStateChanged(auth, (u) => {
+      setUser(u || null);
+      setAuthLoading(false);
+
+      if (!u) {
+        router.replace("/auth?mode=login"); // change to "/login" if you want
+      }
+    });
+
+    return () => unsub();
+  }, [router]);
+
+  // If you're not using auth guard, ownerId stays mockOwnerId.
+  const ownerId = user?.uid || mockOwnerId;
+
   // ------------------ FORM ------------------
   const [productForm, setProductForm] = useState({
     slug: "",
@@ -95,8 +126,6 @@ export default function Home() {
   const [reorder, setReorder] = useState(null);
   const [recoSlug, setRecoSlug] = useState("");
   const [reco, setReco] = useState(null);
-
-  const ownerId = mockOwnerId;
 
   const toastIt = (msg, type = "ok") => {
     setToast({ msg, type });
@@ -152,21 +181,26 @@ export default function Home() {
   };
 
   useEffect(() => {
+    // If auth is required, wait until auth is resolved
+    if (REQUIRE_AUTH && authLoading) return;
+
     fetchProducts();
     fetchDashboard();
     fetchRecommendations("");
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [authLoading]);
 
   useEffect(() => {
+    if (REQUIRE_AUTH && authLoading) return;
     fetchDashboard();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [days]);
+  }, [days, authLoading]);
 
   useEffect(() => {
+    if (REQUIRE_AUTH && authLoading) return;
     fetchRecommendations(recoSlug);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [recoSlug]);
+  }, [recoSlug, authLoading]);
 
   // ------------------ FILTERED PRODUCTS ------------------
   const filtered = useMemo(() => {
@@ -234,7 +268,7 @@ export default function Home() {
 
   const onSellOne = async (slug) => {
     try {
-      await patchProduct({ slug, delta: -1 });
+      await patchProduct({ slug, delta: -1, ...(ownerId ? { ownerId } : {}) });
       toastIt("Sold 1 ✅");
       await fetchProducts();
       await fetchDashboard();
@@ -246,7 +280,7 @@ export default function Home() {
 
   const onRestock = async (slug, qty = 10) => {
     try {
-      await patchProduct({ slug, delta: qty });
+      await patchProduct({ slug, delta: qty, ...(ownerId ? { ownerId } : {}) });
       toastIt(`Restocked +${qty} ✅`);
       await fetchProducts();
       await fetchDashboard();
@@ -258,11 +292,14 @@ export default function Home() {
 
   const onDelete = async (slug) => {
     try {
-      const r = await fetch(`/api/product?slug=${encodeURIComponent(slug)}`, {
-        method: "DELETE",
-      });
+      const url = ownerId
+        ? `/api/product?slug=${encodeURIComponent(slug)}&ownerId=${encodeURIComponent(ownerId)}`
+        : `/api/product?slug=${encodeURIComponent(slug)}`;
+
+      const r = await fetch(url, { method: "DELETE" });
       const j = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(j?.error || "Delete failed");
+
       toastIt("Deleted ✅");
       await fetchProducts();
       await fetchDashboard();
@@ -278,6 +315,20 @@ export default function Home() {
   const suggestions = useMemo(() => reorder?.suggestions || [], [reorder]);
 
   const kpis = analytics?.kpis || { revenue: 0, salesCount: 0, aov: 0 };
+
+  // ------------------ AUTH LOADING UI ------------------
+  if (REQUIRE_AUTH && authLoading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-b from-indigo-50 via-white to-white">
+        <Header />
+        <div className="mx-auto max-w-6xl px-4 py-14">
+          <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+            <p className="text-sm text-slate-700">Loading dashboard…</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-indigo-50 via-white to-white">
@@ -305,17 +356,21 @@ export default function Home() {
           <div className="flex flex-wrap items-end justify-between gap-3">
             <div>
               <h1 className="text-3xl font-bold tracking-tight">InventoryX</h1>
-              <p className="text-gray-600">
+              <p className="text-slate-600">
                 Manage products, track sales, and get smart reorder + recommendations.
               </p>
+              {user?.email ? (
+                <p className="mt-1 text-xs text-slate-500">Signed in as {user.email}</p>
+              ) : null}
             </div>
+
             <button
               onClick={() => {
                 fetchProducts();
                 fetchDashboard();
                 fetchRecommendations(recoSlug);
               }}
-              className="inline-flex items-center gap-2 rounded-2xl border bg-white px-4 py-2 shadow-sm hover:bg-gray-50"
+              className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2 shadow-sm hover:bg-slate-50"
             >
               <RefreshCw className="h-4 w-4" />
               Refresh
@@ -328,7 +383,7 @@ export default function Home() {
           onSubmit={addOrUpdateProduct}
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
-          className="mt-6 rounded-2xl border bg-white p-4 shadow-sm"
+          className="mt-6 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"
         >
           <div className="flex items-center justify-between">
             <h2 className="font-semibold">Add / Update Product</h2>
@@ -341,41 +396,41 @@ export default function Home() {
               value={productForm.slug}
               onChange={handleChange}
               placeholder="slug (unique id)"
-              className="rounded-2xl border px-3 py-2 outline-none"
+              className="rounded-2xl border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-200"
             />
             <input
               name="quantity"
               value={productForm.quantity}
               onChange={handleChange}
               placeholder="quantity"
-              className="rounded-2xl border px-3 py-2 outline-none"
+              className="rounded-2xl border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-200"
             />
             <input
               name="price"
               value={productForm.price}
               onChange={handleChange}
               placeholder="price"
-              className="rounded-2xl border px-3 py-2 outline-none"
+              className="rounded-2xl border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-200"
             />
             <input
               name="leadTimeDays"
               value={productForm.leadTimeDays}
               onChange={handleChange}
               placeholder="lead time (days)"
-              className="rounded-2xl border px-3 py-2 outline-none"
+              className="rounded-2xl border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-200"
             />
             <input
               name="safetyStock"
               value={productForm.safetyStock}
               onChange={handleChange}
               placeholder="safety stock"
-              className="rounded-2xl border px-3 py-2 outline-none"
+              className="rounded-2xl border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-200"
             />
           </div>
 
           <button
             disabled={saving}
-            className="mt-4 inline-flex items-center gap-2 rounded-2xl bg-black px-4 py-2 text-white hover:opacity-90 disabled:opacity-50"
+            className="mt-4 inline-flex items-center gap-2 rounded-2xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-50"
           >
             <Plus className="h-4 w-4" />
             {saving ? "Saving..." : "Save Product"}
@@ -384,22 +439,22 @@ export default function Home() {
 
         {/* Search + Range */}
         <div className="mt-6 flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2 rounded-2xl border bg-white px-3 py-2 shadow-sm">
-            <Search className="h-4 w-4 text-gray-600" />
+          <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 shadow-sm">
+            <Search className="h-4 w-4 text-slate-600" />
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Search by slug..."
-              className="w-72 outline-none"
+              className="w-72 bg-transparent text-sm outline-none"
             />
           </div>
 
-          <div className="flex items-center gap-2 rounded-2xl border bg-white p-2 shadow-sm">
-            <label className="text-sm text-gray-600">Range</label>
+          <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white p-2 shadow-sm">
+            <label className="text-sm text-slate-600">Range</label>
             <select
               value={days}
               onChange={(e) => setDays(Number(e.target.value))}
-              className="rounded-xl border px-3 py-2 text-sm outline-none"
+              className="rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-200"
             >
               <option value={7}>7 days</option>
               <option value={30}>30 days</option>
@@ -420,10 +475,10 @@ export default function Home() {
           <motion.div
             initial={{ opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}
-            className="rounded-2xl border bg-white p-4 shadow-sm"
+            className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"
           >
             <h2 className="font-semibold">Revenue Trend</h2>
-            <p className="text-sm text-gray-600">Uses transactions.sale + priceSnapshot</p>
+            <p className="text-sm text-slate-600">Uses transactions.sale + priceSnapshot</p>
             <div className="mt-4 h-72">
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={daily}>
@@ -440,10 +495,10 @@ export default function Home() {
           <motion.div
             initial={{ opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}
-            className="rounded-2xl border bg-white p-4 shadow-sm"
+            className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"
           >
             <h2 className="font-semibold">Top Products</h2>
-            <p className="text-sm text-gray-600">Most sold by units</p>
+            <p className="text-sm text-slate-600">Most sold by units</p>
             <div className="mt-4 h-72">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={topProducts}>
@@ -463,23 +518,23 @@ export default function Home() {
           <motion.div
             initial={{ opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}
-            className="rounded-2xl border bg-white p-4 shadow-sm"
+            className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"
           >
             <div className="flex items-center justify-between">
               <div>
                 <h2 className="font-semibold">Smart Auto-Reorder</h2>
-                <p className="text-sm text-gray-600">Velocity + leadTime + safetyStock</p>
+                <p className="text-sm text-slate-600">Velocity + leadTime + safetyStock</p>
               </div>
-              <div className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm">
-                <AlertTriangle className="h-4 w-4 text-gray-600" />
+              <div className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm">
+                <AlertTriangle className="h-4 w-4 text-slate-600" />
                 {suggestions.filter((s) => ["high", "critical"].includes(s.urgency)).length} urgent
               </div>
             </div>
 
-            <div className="mt-4 max-h-[340px] overflow-auto rounded-xl border">
+            <div className="mt-4 max-h-[340px] overflow-auto rounded-xl border border-slate-200">
               <table className="w-full text-sm">
-                <thead className="sticky top-0 bg-white">
-                  <tr className="text-left text-gray-600">
+                <thead className="sticky top-0 bg-white/90 backdrop-blur">
+                  <tr className="text-left text-slate-500">
                     <th className="p-3">Slug</th>
                     <th className="p-3">Qty</th>
                     <th className="p-3">ROP</th>
@@ -489,7 +544,7 @@ export default function Home() {
                 </thead>
                 <tbody>
                   {suggestions.slice(0, 25).map((s) => (
-                    <tr key={s.slug} className="border-t">
+                    <tr key={s.slug} className="border-t border-slate-200 hover:bg-slate-50">
                       <td className="p-3 font-medium">{s.slug}</td>
                       <td className="p-3">{toNum(s.currentQty)}</td>
                       <td className="p-3">{toNum(s.reorderPoint)}</td>
@@ -497,7 +552,7 @@ export default function Home() {
                       <td className="p-3">
                         <button
                           onClick={() => onRestock(s.slug, Math.max(1, toNum(s.recommendedQty)))}
-                          className="rounded-xl border bg-white px-3 py-2 text-xs hover:bg-gray-50"
+                          className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs hover:bg-slate-50"
                         >
                           Restock
                         </button>
@@ -506,7 +561,7 @@ export default function Home() {
                   ))}
                   {!suggestions.length && (
                     <tr>
-                      <td className="p-4 text-gray-600" colSpan={5}>
+                      <td className="p-4 text-slate-600" colSpan={5}>
                         No suggestions yet. Record a few sales.
                       </td>
                     </tr>
@@ -519,17 +574,17 @@ export default function Home() {
           <motion.div
             initial={{ opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}
-            className="rounded-2xl border bg-white p-4 shadow-sm"
+            className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"
           >
             <div className="flex items-center justify-between">
               <div>
                 <h2 className="font-semibold">Recommendations</h2>
-                <p className="text-sm text-gray-600">
+                <p className="text-sm text-slate-600">
                   {recoSlug ? `For "${recoSlug}"` : "Trending fallback"}
                 </p>
               </div>
-              <div className="rounded-xl border bg-white p-2">
-                <Sparkles className="h-5 w-5" />
+              <div className="rounded-xl border border-slate-200 bg-white p-2">
+                <Sparkles className="h-5 w-5 text-slate-700" />
               </div>
             </div>
 
@@ -538,7 +593,7 @@ export default function Home() {
                 value={recoSlug}
                 onChange={(e) => setRecoSlug(e.target.value)}
                 placeholder="Enter a product slug..."
-                className="w-full rounded-2xl border px-3 py-2 outline-none"
+                className="w-full rounded-2xl border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-200"
               />
             </div>
 
@@ -547,20 +602,20 @@ export default function Home() {
                 <motion.div
                   key={r.slug}
                   whileHover={{ scale: 1.02 }}
-                  className="rounded-2xl border bg-gradient-to-b from-white to-indigo-50 p-4 shadow-sm"
+                  className="rounded-2xl border border-slate-200 bg-gradient-to-b from-white to-indigo-50 p-4 shadow-sm"
                 >
                   <p className="font-semibold">{r.slug}</p>
-                  <p className="text-sm text-gray-600">score: {toNum(r.score, 0)}</p>
+                  <p className="text-sm text-slate-600">score: {toNum(r.score, 0)}</p>
                   <div className="mt-3 grid grid-cols-2 gap-2">
                     <button
                       onClick={() => setRecoSlug(r.slug)}
-                      className="rounded-xl border bg-white px-3 py-2 text-xs hover:bg-gray-50"
+                      className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs hover:bg-slate-50"
                     >
                       Explore
                     </button>
                     <button
                       onClick={() => onSellOne(r.slug)}
-                      className="rounded-xl bg-black px-3 py-2 text-xs text-white hover:opacity-90"
+                      className="rounded-xl bg-slate-900 px-3 py-2 text-xs text-white hover:bg-slate-800"
                     >
                       Sell 1
                     </button>
@@ -568,7 +623,7 @@ export default function Home() {
                 </motion.div>
               ))}
               {!reco?.recommendations?.length && (
-                <p className="text-sm text-gray-600">No recommendations yet.</p>
+                <p className="text-sm text-slate-600">No recommendations yet.</p>
               )}
             </div>
           </motion.div>
@@ -578,17 +633,17 @@ export default function Home() {
         <motion.div
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
-          className="mt-6 rounded-2xl border bg-white p-4 shadow-sm"
+          className="mt-6 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"
         >
           <div className="flex items-center justify-between">
             <h2 className="font-semibold">Current Stock</h2>
             <Badge text={`${filtered.length} items`} />
           </div>
 
-          <div className="mt-4 overflow-auto rounded-xl border">
+          <div className="mt-4 overflow-auto rounded-xl border border-slate-200">
             <table className="w-full text-sm">
-              <thead className="sticky top-0 bg-white">
-                <tr className="text-left text-gray-600">
+              <thead className="sticky top-0 bg-white/90 backdrop-blur">
+                <tr className="text-left text-slate-500">
                   <th className="p-3">Slug</th>
                   <th className="p-3">Qty</th>
                   <th className="p-3">Price</th>
@@ -600,8 +655,9 @@ export default function Home() {
               <tbody>
                 {filtered.map((p) => {
                   const qty = toNum(p?.quantity, 0);
+
                   return (
-                    <tr key={p.slug} className="border-t">
+                    <tr key={p.slug} className="border-t border-slate-200 hover:bg-slate-50">
                       <td className="p-3 font-medium">{p.slug}</td>
                       <td className="p-3">
                         <div className="flex items-center gap-2">
@@ -615,7 +671,7 @@ export default function Home() {
                               low
                             </span>
                           ) : (
-                            <span className="rounded-full border px-2 py-1 text-xs">
+                            <span className="rounded-full border border-slate-200 bg-white px-2 py-1 text-xs">
                               ok
                             </span>
                           )}
@@ -628,13 +684,13 @@ export default function Home() {
                         <div className="flex flex-wrap gap-2">
                           <button
                             onClick={() => onSellOne(p.slug)}
-                            className="rounded-xl bg-black px-3 py-2 text-xs text-white hover:opacity-90"
+                            className="rounded-xl bg-slate-900 px-3 py-2 text-xs text-white hover:bg-slate-800"
                           >
                             Sell 1
                           </button>
                           <button
                             onClick={() => onRestock(p.slug, 10)}
-                            className="rounded-xl border bg-white px-3 py-2 text-xs hover:bg-gray-50"
+                            className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs hover:bg-slate-50"
                           >
                             Restock +10
                           </button>
@@ -652,7 +708,7 @@ export default function Home() {
 
                 {!filtered.length && (
                   <tr>
-                    <td className="p-4 text-gray-600" colSpan={6}>
+                    <td className="p-4 text-slate-600" colSpan={6}>
                       No products found.
                     </td>
                   </tr>
